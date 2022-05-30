@@ -1,28 +1,27 @@
 // SPDX-License-Identifier: Unlicense
+pragma solidity 0.8.7;
 
-pragma solidity 0.7.6;
-
-import "@openzeppelin/contracts/math/Math.sol";
-import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
+
 import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3MintCallback.sol";
 import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import "@uniswap/v3-core/contracts/libraries/TickMath.sol";
-import "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
 import "@uniswap/v3-periphery/contracts/libraries/PositionKey.sol";
 
-import "../interfaces/IVault.sol";
+import "./libraries/TickMath.sol";
+import "./libraries/LiquidityAmounts.sol";
+
 
 /**
- * @title   Alpha Vault
- * @notice  A vault that provides liquidity on Uniswap V3.
+ * @title   Booster pool
+ * @notice  A pool that provides liquidity on Uniswap V3.
  */
-contract AlphaVault is
-    IVault,
+contract Booster is
     IUniswapV3MintCallback,
     IUniswapV3SwapCallback,
     ERC20,
@@ -69,13 +68,11 @@ contract AlphaVault is
 
     int24 public baseLower;
     int24 public baseUpper;
-    int24 public limitLower;
-    int24 public limitUpper;
+
     uint256 public accruedProtocolFees0;
     uint256 public accruedProtocolFees1;
 
     /**
-     * @dev After deploying, strategy needs to be set via `setStrategy()`
      * @param _pool Underlying Uniswap V3 pool
      * @param _protocolFee Protocol fee expressed as multiple of 1e-6
      * @param _maxTotalSupply Cap on total supply
@@ -84,7 +81,7 @@ contract AlphaVault is
         address _pool,
         uint256 _protocolFee,
         uint256 _maxTotalSupply
-    ) ERC20("Alpha Vault", "AV") {
+    ) ERC20("Booster pool", "BP") {
         pool = IUniswapV3Pool(_pool);
         token0 = IERC20(IUniswapV3Pool(_pool).token0());
         token1 = IERC20(IUniswapV3Pool(_pool).token1());
@@ -120,7 +117,6 @@ contract AlphaVault is
         address to
     )
         external
-        override
         nonReentrant
         returns (
             uint256 shares,
@@ -133,7 +129,6 @@ contract AlphaVault is
 
         // Poke positions so vault's current holdings are up-to-date
         _poke(baseLower, baseUpper);
-        _poke(limitLower, limitUpper);
 
         // Calculate amounts proportional to vault's holdings
         (shares, amount0, amount1) = _calcSharesAndAmounts(amount0Desired, amount1Desired);
@@ -149,6 +144,7 @@ contract AlphaVault is
         _mint(to, shares);
         emit Deposit(msg.sender, to, shares, amount0, amount1);
         require(totalSupply() <= maxTotalSupply, "maxTotalSupply");
+        rebalancePrivate(0, 0, baseLower, baseUpper);
     }
 
     /// @dev Do zero-burns to poke a position on Uniswap so earned fees are
@@ -215,7 +211,7 @@ contract AlphaVault is
         uint256 amount0Min,
         uint256 amount1Min,
         address to
-    ) external override nonReentrant returns (uint256 amount0, uint256 amount1) {
+    ) external nonReentrant returns (uint256 amount0, uint256 amount1) {
         require(shares > 0, "shares");
         require(to != address(0) && to != address(this), "to");
         uint256 totalSupply = totalSupply();
@@ -230,12 +226,10 @@ contract AlphaVault is
         // Withdraw proportion of liquidity from Uniswap pool
         (uint256 baseAmount0, uint256 baseAmount1) =
             _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
-        (uint256 limitAmount0, uint256 limitAmount1) =
-            _burnLiquidityShare(limitLower, limitUpper, shares, totalSupply);
 
         // Sum up total amounts owed to recipient
-        amount0 = unusedAmount0.add(baseAmount0).add(limitAmount0);
-        amount1 = unusedAmount1.add(baseAmount1).add(limitAmount1);
+        amount0 = unusedAmount0.add(baseAmount0);
+        amount1 = unusedAmount1.add(baseAmount1);
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
 
@@ -266,6 +260,16 @@ contract AlphaVault is
         }
     }
 
+    function rebalance( 
+        int256 swapAmount,
+        uint160 sqrtPriceLimitX96,
+        int24 _baseLower,
+        int24 _baseUpper
+    ) external nonReentrant {
+        require(msg.sender == strategy, "strategy");
+        rebalancePrivate(swapAmount, sqrtPriceLimitX96, _baseLower, _baseUpper);
+    }
+
     /**
      * @notice Updates vault's positions. Can only be called by the strategy.
      * @dev Two orders are placed - a base order and a limit order. The base
@@ -273,31 +277,21 @@ contract AlphaVault is
      * should use up all of one token, leaving only the other one. This excess
      * amount is then placed as a single-sided bid or ask order.
      */
-    function rebalance(
+    function rebalancePrivate(
         int256 swapAmount,
         uint160 sqrtPriceLimitX96,
         int24 _baseLower,
-        int24 _baseUpper,
-        int24 _bidLower,
-        int24 _bidUpper,
-        int24 _askLower,
-        int24 _askUpper
-    ) external nonReentrant {
-        require(msg.sender == strategy, "strategy");
+        int24 _baseUpper
+    ) private nonReentrant {
+        
         _checkRange(_baseLower, _baseUpper);
-        _checkRange(_bidLower, _bidUpper);
-        _checkRange(_askLower, _askUpper);
 
         (, int24 tick, , , , , ) = pool.slot0();
-        require(_bidUpper <= tick, "bidUpper");
-        require(_askLower > tick, "askLower"); // inequality is strict as tick is rounded down
 
         // Withdraw all current liquidity from Uniswap pool
         {
             (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
-            (uint128 limitLiquidity, , , , ) = _position(limitLower, limitUpper);
             _burnAndCollect(baseLower, baseUpper, baseLiquidity);
-            _burnAndCollect(limitLower, limitUpper, limitLiquidity);
         }
 
         // Emit snapshot to record balances and supply
@@ -321,20 +315,6 @@ contract AlphaVault is
         uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, balance0, balance1);
         _mintLiquidity(_baseLower, _baseUpper, liquidity);
         (baseLower, baseUpper) = (_baseLower, _baseUpper);
-
-        balance0 = getBalance0();
-        balance1 = getBalance1();
-
-        // Place bid or ask order on Uniswap depending on which token is left
-        uint128 bidLiquidity = _liquidityForAmounts(_bidLower, _bidUpper, balance0, balance1);
-        uint128 askLiquidity = _liquidityForAmounts(_askLower, _askUpper, balance0, balance1);
-        if (bidLiquidity > askLiquidity) {
-            _mintLiquidity(_bidLower, _bidUpper, bidLiquidity);
-            (limitLower, limitUpper) = (_bidLower, _bidUpper);
-        } else {
-            _mintLiquidity(_askLower, _askUpper, askLiquidity);
-            (limitLower, limitUpper) = (_askLower, _askUpper);
-        }
     }
 
     function _checkRange(int24 tickLower, int24 tickUpper) internal view {
@@ -409,12 +389,10 @@ contract AlphaVault is
      * other words, how much of each token the vault would hold if it withdrew
      * all its liquidity from Uniswap.
      */
-    function getTotalAmounts() public view override returns (uint256 total0, uint256 total1) {
+    function getTotalAmounts() public view returns (uint256 total0, uint256 total1) {
         (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts(baseLower, baseUpper);
-        (uint256 limitAmount0, uint256 limitAmount1) =
-            getPositionAmounts(limitLower, limitUpper);
-        total0 = getBalance0().add(baseAmount0).add(limitAmount0);
-        total1 = getBalance1().add(baseAmount1).add(limitAmount1);
+        total0 = getBalance0().add(baseAmount0);
+        total1 = getBalance1().add(baseAmount1);
     }
 
     /**
