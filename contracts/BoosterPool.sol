@@ -62,15 +62,18 @@ contract Booster is
 
     uint256 public protocolFee;
     uint256 public maxTotalSupply;
-    address public strategy;
     address public governance;
     address public pendingGovernance;
-
+    address public strategy;
+    address public team;
     int24 public baseLower;
     int24 public baseUpper;
 
-    uint256 public accruedProtocolFees0;
-    uint256 public accruedProtocolFees1;
+    uint256 public accruedOwnerFees0;
+    uint256 public accruedOwnerFees1;
+
+    uint256 public accruedTeamFees0;
+    uint256 public accruedTeamFees1;
 
     /**
      * @param _pool Underlying Uniswap V3 pool
@@ -80,7 +83,8 @@ contract Booster is
     constructor(
         address _pool,
         uint256 _protocolFee,
-        uint256 _maxTotalSupply
+        uint256 _maxTotalSupply,
+        address _team
     ) ERC20("Booster pool", "BP") {
         pool = IUniswapV3Pool(_pool);
         token0 = IERC20(IUniswapV3Pool(_pool).token0());
@@ -90,6 +94,7 @@ contract Booster is
         protocolFee = _protocolFee;
         maxTotalSupply = _maxTotalSupply;
         governance = msg.sender;
+        team = _team;
 
         require(_protocolFee < 1e6, "protocolFee");
     }
@@ -170,7 +175,7 @@ contract Booster is
         )
     {
         uint256 totalSupply = totalSupply();
-        (uint256 total0, uint256 total1) = getTotalAmounts();
+        (uint256 total0, uint256 total1) = getTotalAmountsForCalcShares();
 
         // If total supply > 0, vault can't be empty
         assert(totalSupply == 0 || total0 > 0 || total1 > 0);
@@ -220,16 +225,18 @@ contract Booster is
         _burn(msg.sender, shares);
 
         // Calculate token amounts proportional to unused balances
-        uint256 unusedAmount0 = getBalance0().mul(shares).div(totalSupply);
-        uint256 unusedAmount1 = getBalance1().mul(shares).div(totalSupply);
+        //uint256 unusedAmount0 = getBalance0().mul(shares).div(totalSupply);
+        //uint256 unusedAmount1 = getBalance1().mul(shares).div(totalSupply);
 
         // Withdraw proportion of liquidity from Uniswap pool
-        (uint256 baseAmount0, uint256 baseAmount1) =
+        //(uint256 baseAmount0, uint256 baseAmount1) =
+        (amount0, amount1) =
             _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
 
         // Sum up total amounts owed to recipient
-        amount0 = unusedAmount0.add(baseAmount0);
-        amount1 = unusedAmount1.add(baseAmount1);
+        //amount0 = unusedAmount0.add(baseAmount0);
+        //amount1 = unusedAmount1.add(baseAmount1);
+
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
 
@@ -282,7 +289,7 @@ contract Booster is
         uint160 sqrtPriceLimitX96,
         int24 _baseLower,
         int24 _baseUpper
-    ) private nonReentrant {
+    ) private {
         
         _checkRange(_baseLower, _baseUpper);
 
@@ -367,8 +374,11 @@ contract Booster is
             feesToProtocol1 = feesToVault1.mul(_protocolFee).div(1e6);
             feesToVault0 = feesToVault0.sub(feesToProtocol0);
             feesToVault1 = feesToVault1.sub(feesToProtocol1);
-            accruedProtocolFees0 = accruedProtocolFees0.add(feesToProtocol0);
-            accruedProtocolFees1 = accruedProtocolFees1.add(feesToProtocol1);
+
+            accruedOwnerFees0 = accruedOwnerFees0.add(feesToProtocol0.div(2));
+            accruedOwnerFees1 = accruedOwnerFees1.add(feesToProtocol1.div(2));
+            accruedTeamFees0 = accruedTeamFees0.add(feesToProtocol0 - feesToProtocol0.div(2));
+            accruedTeamFees1 = accruedTeamFees1.add(feesToProtocol1 - feesToProtocol1.div(2));
         }
         emit CollectFees(feesToVault0, feesToVault1, feesToProtocol0, feesToProtocol1);
     }
@@ -395,6 +405,14 @@ contract Booster is
         total1 = getBalance1().add(baseAmount1);
     }
 
+    function getTotalAmountsForCalcShares() public view returns (uint256 total0, uint256 total1) {
+        (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts(baseLower, baseUpper);
+        total0 = getBalance0().add(baseAmount0);
+        total1 = getBalance1().add(baseAmount1);
+        uint128 liquidity = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
+        (total0, total1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
+    }
+
     /**
      * @notice Amounts of token0 and token1 held in vault's position. Includes
      * owed fees but excludes the proportion of fees that will be paid to the
@@ -419,14 +437,15 @@ contract Booster is
      * @notice Balance of token0 in vault not used in any position.
      */
     function getBalance0() public view returns (uint256) {
-        return token0.balanceOf(address(this)).sub(accruedProtocolFees0);
+        return token0.balanceOf(address(this)).sub(accruedOwnerFees0).sub(accruedTeamFees0);
+
     }
 
     /**
      * @notice Balance of token1 in vault not used in any position.
      */
     function getBalance1() public view returns (uint256) {
-        return token1.balanceOf(address(this)).sub(accruedProtocolFees1);
+        return token1.balanceOf(address(this)).sub(accruedOwnerFees1).sub(accruedTeamFees1);
     }
 
     /// @dev Wrapper around `IUniswapV3Pool.positions()`.
@@ -479,6 +498,7 @@ contract Booster is
             );
     }
 
+
     /// @dev Casts uint256 to uint128 with overflow check.
     function _toUint128(uint256 x) internal pure returns (uint128) {
         assert(x <= type(uint128).max);
@@ -510,13 +530,24 @@ contract Booster is
     /**
      * @notice Used to collect accumulated protocol fees.
      */
-    function collectProtocol(
+    function collectOwnerProtocol(
         uint256 amount0,
         uint256 amount1,
         address to
     ) external onlyGovernance {
-        accruedProtocolFees0 = accruedProtocolFees0.sub(amount0);
-        accruedProtocolFees1 = accruedProtocolFees1.sub(amount1);
+        accruedOwnerFees0 = accruedOwnerFees0.sub(amount0);
+        accruedOwnerFees1 = accruedOwnerFees1.sub(amount1);
+        if (amount0 > 0) token0.safeTransfer(to, amount0);
+        if (amount1 > 0) token1.safeTransfer(to, amount1);
+    }
+
+    function collectTeamProtocol(
+        uint256 amount0,
+        uint256 amount1,
+        address to
+    ) external onlyTeam {
+        accruedTeamFees0 = accruedTeamFees0.sub(amount0);
+        accruedTeamFees1 = accruedTeamFees1.sub(amount1);
         if (amount0 > 0) token0.safeTransfer(to, amount0);
         if (amount1 > 0) token1.safeTransfer(to, amount1);
     }
@@ -592,6 +623,11 @@ contract Booster is
 
     modifier onlyGovernance {
         require(msg.sender == governance, "governance");
+        _;
+    }
+
+    modifier onlyTeam {
+        require(msg.sender == team, "governance");
         _;
     }
 }
