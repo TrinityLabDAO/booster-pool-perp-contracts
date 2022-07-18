@@ -15,6 +15,11 @@
                 "internalType": "uint256",
                 "name": "_maxTotalSupply",
                 "type": "uint256"
+            },
+            {
+                "internalType": "address",
+                "name": "_team",
+                "type": "address"
             }
         ],
         "stateMutability": "nonpayable",
@@ -215,7 +220,7 @@
     },
     {
         "inputs": [],
-        "name": "accruedProtocolFees0",
+        "name": "accruedOwnerFees0",
         "outputs": [
             {
                 "internalType": "uint256",
@@ -228,7 +233,33 @@
     },
     {
         "inputs": [],
-        "name": "accruedProtocolFees1",
+        "name": "accruedOwnerFees1",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "accruedTeamFees0",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "accruedTeamFees1",
         "outputs": [
             {
                 "internalType": "uint256",
@@ -350,7 +381,30 @@
                 "type": "address"
             }
         ],
-        "name": "collectProtocol",
+        "name": "collectOwnerProtocol",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "amount0",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "amount1",
+                "type": "uint256"
+            },
+            {
+                "internalType": "address",
+                "name": "to",
+                "type": "address"
+            }
+        ],
+        "name": "collectTeamProtocol",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -522,6 +576,24 @@
     {
         "inputs": [],
         "name": "getTotalAmounts",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "total0",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "total1",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getTotalAmountsForCalcShares",
         "outputs": [
             {
                 "internalType": "uint256",
@@ -763,6 +835,19 @@
                 "internalType": "string",
                 "name": "",
                 "type": "string"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "team",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
             }
         ],
         "stateMutability": "view",
