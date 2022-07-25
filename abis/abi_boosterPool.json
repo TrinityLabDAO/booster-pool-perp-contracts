@@ -153,6 +153,25 @@
         "anonymous": false,
         "inputs": [
             {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "total0",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "total1",
+                "type": "uint256"
+            }
+        ],
+        "name": "Total",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
                 "indexed": true,
                 "internalType": "address",
                 "name": "from",
@@ -411,6 +430,34 @@
     },
     {
         "inputs": [],
+        "name": "collect_BOOSTER",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "burned0",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "burned1",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "collect0",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "collect1",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
         "name": "decimals",
         "outputs": [
             {
@@ -519,6 +566,30 @@
         "type": "function"
     },
     {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "amountBP",
+                "type": "uint256"
+            }
+        ],
+        "name": "getAmounts",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "amount0",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "amount1",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
         "inputs": [],
         "name": "getBalance0",
         "outputs": [
@@ -545,18 +616,7 @@
         "type": "function"
     },
     {
-        "inputs": [
-            {
-                "internalType": "int24",
-                "name": "tickLower",
-                "type": "int24"
-            },
-            {
-                "internalType": "int24",
-                "name": "tickUpper",
-                "type": "int24"
-            }
-        ],
+        "inputs": [],
         "name": "getPositionAmounts",
         "outputs": [
             {

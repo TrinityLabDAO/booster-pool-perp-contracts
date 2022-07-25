@@ -8,6 +8,8 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
+import '@uniswap/v3-core/contracts/libraries/FixedPoint128.sol';
+
 import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3MintCallback.sol";
 import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
@@ -53,6 +55,10 @@ contract Booster is
         uint256 feesToProtocol1
     );
 
+    event Total(
+        uint256 total0,
+        uint256 total1
+    );
     event Snapshot(int24 tick, uint256 totalAmount0, uint256 totalAmount1, uint256 totalSupply);
 
     IUniswapV3Pool public immutable pool;
@@ -167,7 +173,6 @@ contract Booster is
     /// `amount0Desired` and `amount1Desired` respectively.
     function _calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired)
         internal
-        view
         returns (
             uint256 shares,
             uint256 amount0,
@@ -175,7 +180,12 @@ contract Booster is
         )
     {
         uint256 totalSupply = totalSupply();
-        (uint256 total0, uint256 total1) = getTotalAmountsForCalcShares();
+        //(uint256 total0, uint256 total1) = getTotalAmountsForCalcShares();
+        (uint256 total0, uint256 total1) = getTotalAmounts();
+        uint128 liquidity = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
+        (total0, total1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
+
+        emit Total(total0, total1);
 
         // If total supply > 0, vault can't be empty
         assert(totalSupply == 0 || total0 > 0 || total1 > 0);
@@ -400,13 +410,13 @@ contract Booster is
      * all its liquidity from Uniswap.
      */
     function getTotalAmounts() public view returns (uint256 total0, uint256 total1) {
-        (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts(baseLower, baseUpper);
+        (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts();
         total0 = getBalance0().add(baseAmount0);
         total1 = getBalance1().add(baseAmount1);
     }
 
     function getTotalAmountsForCalcShares() public view returns (uint256 total0, uint256 total1) {
-        (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts(baseLower, baseUpper);
+        (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts();
         total0 = getBalance0().add(baseAmount0);
         total1 = getBalance1().add(baseAmount1);
         uint128 liquidity = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
@@ -418,14 +428,14 @@ contract Booster is
      * owed fees but excludes the proportion of fees that will be paid to the
      * protocol. Doesn't include fees accrued since last poke.
      */
-    function getPositionAmounts(int24 tickLower, int24 tickUpper)
+    function getPositionAmounts()
         public
         view
         returns (uint256 amount0, uint256 amount1)
     {
         (uint128 liquidity, , , uint128 tokensOwed0, uint128 tokensOwed1) =
-            _position(tickLower, tickUpper);
-        (amount0, amount1) = _amountsForLiquidity(tickLower, tickUpper, liquidity);
+            _position(baseLower, baseUpper);
+        (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
 
         // Subtract protocol fees
         uint256 oneMinusFee = uint256(1e6).sub(protocolFee);
@@ -629,5 +639,37 @@ contract Booster is
     modifier onlyTeam {
         require(msg.sender == team, "governance");
         _;
+    }
+
+    function getAmounts(uint256 amountBP)
+        external
+        returns(uint256 amount0, uint256 amount1)
+    {
+        _poke(baseLower, baseUpper);
+        (amount0,  amount1) = getPositionAmounts();
+        (amount0,  amount1) = (amount0.mul(amountBP).div(totalSupply()), amount1.mul(amountBP).div(totalSupply()));
+
+    }
+
+    function collect_BOOSTER()
+        external
+        returns(uint256 burned0, uint256 burned1, uint256 collect0, uint256 collect1)
+    {
+        (uint128 liquidity, , , , ) = _position(baseLower, baseUpper);
+        if (liquidity > 0) {
+            (burned0, burned1) = pool.burn(baseLower, baseUpper, 0);
+        }
+
+        // Collect all owed tokens including earned fees
+        (collect0, collect1) =
+            pool.collect(
+                address(this),
+                baseLower,
+                baseUpper,
+                type(uint128).max,
+                type(uint128).max
+            );
+        (collect0, collect1) =  (collect0 - burned0, collect1 - burned1);
+
     }
 }
