@@ -154,14 +154,14 @@
         "inputs": [
             {
                 "indexed": false,
-                "internalType": "uint256",
-                "name": "total0",
-                "type": "uint256"
+                "internalType": "uint128",
+                "name": "liquidityTotal",
+                "type": "uint128"
             },
             {
                 "indexed": false,
                 "internalType": "uint256",
-                "name": "total1",
+                "name": "liquidityDesired",
                 "type": "uint256"
             }
         ],
@@ -627,42 +627,6 @@
             {
                 "internalType": "uint256",
                 "name": "amount1",
-                "type": "uint256"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "getTotalAmounts",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "total0",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint256",
-                "name": "total1",
-                "type": "uint256"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "getTotalAmountsForCalcShares",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "total0",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint256",
-                "name": "total1",
                 "type": "uint256"
             }
         ],

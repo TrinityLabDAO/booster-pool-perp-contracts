@@ -56,8 +56,8 @@ contract Booster is
     );
 
     event Total(
-        uint256 total0,
-        uint256 total1
+        uint128 liquidityTotal,
+        uint256 liquidityDesired
     );
     event Snapshot(int24 tick, uint256 totalAmount0, uint256 totalAmount1, uint256 totalSupply);
 
@@ -179,36 +179,25 @@ contract Booster is
             uint256 amount1
         )
     {
+        uint128 liquidityDesired = _liquidityForAmounts(baseLower, baseUpper, amount0Desired, amount1Desired);
         uint256 totalSupply = totalSupply();
-        //(uint256 total0, uint256 total1) = getTotalAmountsForCalcShares();
-        (uint256 total0, uint256 total1) = getTotalAmounts();
-        uint128 liquidity = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
-        (total0, total1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
 
-        emit Total(total0, total1);
+        uint128 liquidityTotal = getTotalLiquidity();
+        //uint128 liquidityTotal = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
+
+        emit Total(liquidityTotal, liquidityDesired);
 
         // If total supply > 0, vault can't be empty
-        assert(totalSupply == 0 || total0 > 0 || total1 > 0);
+        assert(totalSupply == 0 || liquidityTotal > 0 );
 
+        (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidityDesired);
+        //adding one penny due to loss during conversion 
+        (amount0, amount1) = (amount0.add(1), amount1.add(1));
         if (totalSupply == 0) {
-            // For first deposit, just use the amounts desired
-            amount0 = amount0Desired;
-            amount1 = amount1Desired;
-            shares = Math.max(amount0, amount1);
-        } else if (total0 == 0) {
-            amount1 = amount1Desired;
-            shares = amount1.mul(totalSupply).div(total1);
-        } else if (total1 == 0) {
-            amount0 = amount0Desired;
-            shares = amount0.mul(totalSupply).div(total0);
+            // For first deposit, just use the liquidity desired      
+            shares = liquidityDesired;
         } else {
-            uint256 cross = Math.min(amount0Desired.mul(total1), amount1Desired.mul(total0));
-            require(cross > 0, "cross");
-
-            // Round up amounts
-            amount0 = cross.sub(1).div(total1).add(1);
-            amount1 = cross.sub(1).div(total0).add(1);
-            shares = cross.mul(totalSupply).div(total0).div(total1);
+            shares = uint256(liquidityDesired).mul(totalSupply).div(liquidityTotal);        
         }
     }
 
@@ -235,17 +224,15 @@ contract Booster is
         _burn(msg.sender, shares);
 
         // Calculate token amounts proportional to unused balances
-        //uint256 unusedAmount0 = getBalance0().mul(shares).div(totalSupply);
-        //uint256 unusedAmount1 = getBalance1().mul(shares).div(totalSupply);
+        uint256 unusedAmount0 = getBalance0().mul(shares).div(totalSupply);
+        uint256 unusedAmount1 = getBalance1().mul(shares).div(totalSupply);
 
         // Withdraw proportion of liquidity from Uniswap pool
-        //(uint256 baseAmount0, uint256 baseAmount1) =
-        (amount0, amount1) =
-            _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
+        (uint256 baseAmount0, uint256 baseAmount1) =  _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
 
         // Sum up total amounts owed to recipient
-        //amount0 = unusedAmount0.add(baseAmount0);
-        //amount1 = unusedAmount1.add(baseAmount1);
+        amount0 = unusedAmount0.add(baseAmount0);
+        amount1 = unusedAmount1.add(baseAmount1);
 
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
@@ -404,23 +391,18 @@ contract Booster is
         }
     }
 
-    /**
-     * @notice Calculates the vault's total holdings of token0 and token1 - in
-     * other words, how much of each token the vault would hold if it withdrew
-     * all its liquidity from Uniswap.
-     */
-    function getTotalAmounts() public view returns (uint256 total0, uint256 total1) {
-        (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts();
-        total0 = getBalance0().add(baseAmount0);
-        total1 = getBalance1().add(baseAmount1);
-    }
 
-    function getTotalAmountsForCalcShares() public view returns (uint256 total0, uint256 total1) {
-        (uint256 baseAmount0, uint256 baseAmount1) = getPositionAmounts();
-        total0 = getBalance0().add(baseAmount0);
-        total1 = getBalance1().add(baseAmount1);
-        uint128 liquidity = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
-        (total0, total1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
+    function getTotalLiquidity() internal view returns (uint128 liquidity) {
+
+        (uint128 liquidityInPosition, , , uint128 tokensOwed0, uint128 tokensOwed1) =
+            _position(baseLower, baseUpper);
+
+        uint256 oneMinusFee = uint256(1e6).sub(protocolFee);
+        uint256 amount0 = getBalance0().add(uint256(tokensOwed0).mul(oneMinusFee).div(1e6));
+        uint256 amount1 = getBalance1().add(uint256(tokensOwed1).mul(oneMinusFee).div(1e6));
+
+        //liquidity in position add liquidity from fees and contract balance
+        liquidity = liquidityInPosition + _liquidityForAmounts(baseLower, baseUpper, amount0, amount1);
     }
 
     /**
