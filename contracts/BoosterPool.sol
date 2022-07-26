@@ -49,8 +49,8 @@ contract Booster is
     );
 
     event CollectFees(
-        uint256 feesToVault0,
-        uint256 feesToVault1,
+        uint256 feesToPool0,
+        uint256 feesToPool1,
         uint256 feesToProtocol0,
         uint256 feesToProtocol1
     );
@@ -155,7 +155,7 @@ contract Booster is
         _mint(to, shares);
         emit Deposit(msg.sender, to, shares, amount0, amount1);
         require(totalSupply() <= maxTotalSupply, "maxTotalSupply");
-        rebalancePrivate(0, 0, baseLower, baseUpper);
+        _reinvest(0, 0);
     }
 
     /// @dev Do zero-burns to poke a position on Uniswap so earned fees are
@@ -201,6 +201,18 @@ contract Booster is
         }
     }
 
+    function calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired) 
+        external
+        returns (
+            uint256 shares,
+            uint256 amount0,
+            uint256 amount1
+        )
+    {
+        _poke(baseLower, baseUpper);
+        (shares, amount0, amount1) = _calcSharesAndAmounts(amount0Desired, amount1Desired);
+    }
+
     /**
      * @notice Withdraws tokens in proportion to the vault's holdings.
      * @param shares Shares burned by sender
@@ -224,15 +236,16 @@ contract Booster is
         _burn(msg.sender, shares);
 
         // Calculate token amounts proportional to unused balances
-        uint256 unusedAmount0 = getBalance0().mul(shares).div(totalSupply);
-        uint256 unusedAmount1 = getBalance1().mul(shares).div(totalSupply);
+        //uint256 unusedAmount0 = getBalance0().mul(shares).div(totalSupply);
+        //uint256 unusedAmount1 = getBalance1().mul(shares).div(totalSupply);
 
         // Withdraw proportion of liquidity from Uniswap pool
-        (uint256 baseAmount0, uint256 baseAmount1) =  _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
+        //(uint256 baseAmount0, uint256 baseAmount1) =  
+        (amount0, amount1) = _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
 
         // Sum up total amounts owed to recipient
-        amount0 = unusedAmount0.add(baseAmount0);
-        amount1 = unusedAmount1.add(baseAmount1);
+        //amount0 = unusedAmount0.add(baseAmount0);
+        //amount1 = unusedAmount1.add(baseAmount1);
 
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
@@ -264,6 +277,24 @@ contract Booster is
         }
     }
 
+    function reinvest(
+        int256 swapAmount,
+        uint160 sqrtPriceLimitX96
+    ) external nonReentrant {
+        require(msg.sender == strategy, "strategy");
+        _poke(baseLower, baseUpper);
+        _reinvest(swapAmount, sqrtPriceLimitX96);
+    }
+
+    function _reinvest(
+        int256 swapAmount,
+        uint160 sqrtPriceLimitX96
+    ) internal {
+        _collect(baseLower, baseUpper);
+        // swap and mint liquidity (fees) to position
+        _swapAndMint(swapAmount, sqrtPriceLimitX96, baseLower, baseUpper);
+    }
+
     function rebalance( 
         int256 swapAmount,
         uint160 sqrtPriceLimitX96,
@@ -271,7 +302,7 @@ contract Booster is
         int24 _baseUpper
     ) external nonReentrant {
         require(msg.sender == strategy, "strategy");
-        rebalancePrivate(swapAmount, sqrtPriceLimitX96, _baseLower, _baseUpper);
+        _rebalance(swapAmount, sqrtPriceLimitX96, _baseLower, _baseUpper);
     }
 
     /**
@@ -281,26 +312,33 @@ contract Booster is
      * should use up all of one token, leaving only the other one. This excess
      * amount is then placed as a single-sided bid or ask order.
      */
-    function rebalancePrivate(
+    function _rebalance(
         int256 swapAmount,
         uint160 sqrtPriceLimitX96,
         int24 _baseLower,
         int24 _baseUpper
-    ) private {
-        
+    ) internal {      
         _checkRange(_baseLower, _baseUpper);
 
-        (, int24 tick, , , , , ) = pool.slot0();
-
         // Withdraw all current liquidity from Uniswap pool
-        {
-            (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
-            _burnAndCollect(baseLower, baseUpper, baseLiquidity);
-        }
+        (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
+        _burnAndCollect(baseLower, baseUpper, baseLiquidity);
+        
+        // swap and mint liquidity to position
+        _swapAndMint(swapAmount, sqrtPriceLimitX96, _baseLower, _baseUpper);
+        (baseLower, baseUpper) = (_baseLower, _baseUpper);
+    }
 
+    function _swapAndMint(
+        int256 swapAmount,
+        uint160 sqrtPriceLimitX96,
+        int24 _baseLower,
+        int24 _baseUpper
+    ) internal {
         // Emit snapshot to record balances and supply
         uint256 balance0 = getBalance0();
         uint256 balance1 = getBalance1();
+        (, int24 tick, , , , , ) = pool.slot0();
         emit Snapshot(tick, balance0, balance1, totalSupply());
 
         if (swapAmount != 0) {
@@ -317,8 +355,8 @@ contract Booster is
 
         // Place base order on Uniswap
         uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, balance0, balance1);
-        _mintLiquidity(_baseLower, _baseUpper, liquidity);
-        (baseLower, baseUpper) = (_baseLower, _baseUpper);
+        if(liquidity > 0)
+            _mintLiquidity(_baseLower, _baseUpper, liquidity);
     }
 
     function _checkRange(int24 tickLower, int24 tickUpper) internal view {
@@ -341,8 +379,8 @@ contract Booster is
         returns (
             uint256 burned0,
             uint256 burned1,
-            uint256 feesToVault0,
-            uint256 feesToVault1
+            uint256 feesToPool0,
+            uint256 feesToPool1
         )
     {
         if (liquidity > 0) {
@@ -359,25 +397,25 @@ contract Booster is
                 type(uint128).max
             );
 
-        feesToVault0 = collect0.sub(burned0);
-        feesToVault1 = collect1.sub(burned1);
+        feesToPool0 = collect0.sub(burned0);
+        feesToPool1 = collect1.sub(burned1);
         uint256 feesToProtocol0;
         uint256 feesToProtocol1;
 
         // Update accrued protocol fees
         uint256 _protocolFee = protocolFee;
         if (_protocolFee > 0) {
-            feesToProtocol0 = feesToVault0.mul(_protocolFee).div(1e6);
-            feesToProtocol1 = feesToVault1.mul(_protocolFee).div(1e6);
-            feesToVault0 = feesToVault0.sub(feesToProtocol0);
-            feesToVault1 = feesToVault1.sub(feesToProtocol1);
+            feesToProtocol0 = feesToPool0.mul(_protocolFee).div(1e6);
+            feesToProtocol1 = feesToPool1.mul(_protocolFee).div(1e6);
+            feesToPool0 = feesToPool0.sub(feesToProtocol0);
+            feesToPool1 = feesToPool1.sub(feesToProtocol1);
 
             accruedOwnerFees0 = accruedOwnerFees0.add(feesToProtocol0.div(2));
             accruedOwnerFees1 = accruedOwnerFees1.add(feesToProtocol1.div(2));
             accruedTeamFees0 = accruedTeamFees0.add(feesToProtocol0 - feesToProtocol0.div(2));
             accruedTeamFees1 = accruedTeamFees1.add(feesToProtocol1 - feesToProtocol1.div(2));
         }
-        emit CollectFees(feesToVault0, feesToVault1, feesToProtocol0, feesToProtocol1);
+        emit CollectFees(feesToPool0, feesToPool1, feesToProtocol0, feesToProtocol1);
     }
 
     /// @dev Deposits liquidity in a range on the Uniswap pool.
@@ -410,8 +448,8 @@ contract Booster is
      * owed fees but excludes the proportion of fees that will be paid to the
      * protocol. Doesn't include fees accrued since last poke.
      */
-    function getPositionAmounts()
-        public
+    function _getPositionAmounts()
+        internal
         view
         returns (uint256 amount0, uint256 amount1)
     {
@@ -623,35 +661,43 @@ contract Booster is
         _;
     }
 
-    function getAmounts(uint256 amountBP)
+    function getTotalAmounts(uint256 amountBP)
         external
         returns(uint256 amount0, uint256 amount1)
     {
-        _poke(baseLower, baseUpper);
-        (amount0,  amount1) = getPositionAmounts();
-        (amount0,  amount1) = (amount0.mul(amountBP).div(totalSupply()), amount1.mul(amountBP).div(totalSupply()));
+        uint256 _totalSupply = totalSupply();
+        if(_totalSupply > 0){
+            _poke(baseLower, baseUpper);
+            (amount0,  amount1) = _getPositionAmounts();
+            (amount0,  amount1) = (amount0.mul(amountBP).div(_totalSupply), amount1.mul(amountBP).div(_totalSupply));
+        } else {
+            (amount0,  amount1) = (0,0);
+        }
 
     }
 
-    function collect_BOOSTER()
-        external
-        returns(uint256 burned0, uint256 burned1, uint256 collect0, uint256 collect1)
-    {
-        (uint128 liquidity, , , , ) = _position(baseLower, baseUpper);
-        if (liquidity > 0) {
-            (burned0, burned1) = pool.burn(baseLower, baseUpper, 0);
-        }
-
+    function _collect(
+        int24 tickLower,
+        int24 tickUpper
+    )
+    internal
+    returns(uint256 collect0, uint256 collect1){
         // Collect all owed tokens including earned fees
         (collect0, collect1) =
             pool.collect(
                 address(this),
-                baseLower,
-                baseUpper,
+                tickLower,
+                tickUpper,
                 type(uint128).max,
                 type(uint128).max
             );
-        (collect0, collect1) =  (collect0 - burned0, collect1 - burned1);
+    }   
 
+    function collect()
+        external
+        returns(uint256 collect0, uint256 collect1)
+    {
+        _poke(baseLower, baseUpper);
+        (collect0, collect1) = _collect(baseLower, baseUpper);
     }
 }
