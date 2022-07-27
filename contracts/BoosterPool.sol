@@ -8,8 +8,6 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
-import '@uniswap/v3-core/contracts/libraries/FixedPoint128.sol';
-
 import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3MintCallback.sol";
 import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
@@ -59,6 +57,7 @@ contract Booster is
         uint128 liquidityTotal,
         uint256 liquidityDesired
     );
+
     event Snapshot(int24 tick, uint256 totalAmount0, uint256 totalAmount1, uint256 totalSupply);
 
     IUniswapV3Pool public immutable pool;
@@ -290,19 +289,9 @@ contract Booster is
         int256 swapAmount,
         uint160 sqrtPriceLimitX96
     ) internal {
-        _collect(baseLower, baseUpper);
+        _burnAndCollect(baseLower, baseUpper, 0);
         // swap and mint liquidity (fees) to position
         _swapAndMint(swapAmount, sqrtPriceLimitX96, baseLower, baseUpper);
-    }
-
-    function rebalance( 
-        int256 swapAmount,
-        uint160 sqrtPriceLimitX96,
-        int24 _baseLower,
-        int24 _baseUpper
-    ) external nonReentrant {
-        require(msg.sender == strategy, "strategy");
-        _rebalance(swapAmount, sqrtPriceLimitX96, _baseLower, _baseUpper);
     }
 
     /**
@@ -312,12 +301,13 @@ contract Booster is
      * should use up all of one token, leaving only the other one. This excess
      * amount is then placed as a single-sided bid or ask order.
      */
-    function _rebalance(
+    function rebalance(
         int256 swapAmount,
         uint160 sqrtPriceLimitX96,
         int24 _baseLower,
         int24 _baseUpper
-    ) internal {      
+    ) external nonReentrant {
+        require(msg.sender == strategy, "strategy");   
         _checkRange(_baseLower, _baseUpper);
 
         // Withdraw all current liquidity from Uniswap pool
@@ -429,7 +419,10 @@ contract Booster is
         }
     }
 
-
+    /**
+    * @notice calculates the liquidity value in the Uniswap V3 pool, taking into account the accrued fee minus the protocol commission
+    * @return liquidity Total liquidity in pool and contract
+    */
     function getTotalLiquidity() internal view returns (uint128 liquidity) {
 
         (uint128 liquidityInPosition, , , uint128 tokensOwed0, uint128 tokensOwed1) =
@@ -461,6 +454,39 @@ contract Booster is
         uint256 oneMinusFee = uint256(1e6).sub(protocolFee);
         amount0 = amount0.add(uint256(tokensOwed0).mul(oneMinusFee).div(1e6));
         amount1 = amount1.add(uint256(tokensOwed1).mul(oneMinusFee).div(1e6));
+    }
+
+    /**
+    * @notice calculates how many assets token0 and token1 can be obtained for BP tokens
+    * @param amountBP Amount of BP tokens for whom the calculation
+    * @return amount0 computed value of token0
+    * @return amount1 computed value of token1
+    */
+    function getTotalAmounts(uint256 amountBP)
+        external
+        returns(uint256 amount0, uint256 amount1)
+    {
+        uint256 _totalSupply = totalSupply();
+        if(_totalSupply > 0){
+            _poke(baseLower, baseUpper);
+            (amount0,  amount1) = _getPositionAmounts();
+            (amount0,  amount1) = (amount0.mul(amountBP).div(_totalSupply), amount1.mul(amountBP).div(_totalSupply));
+        } else {
+            (amount0,  amount1) = (0,0);
+        }
+    }
+
+    /**
+    * @notice Amounts of token0 and token1 in the Uniswap V3 pool to be collected
+    * @return collect0 amount of accrued fees in token0
+    * @return collect1 amount of accrued fees in token1
+    */
+    function collect()
+        external
+        returns(uint256 collect0, uint256 collect1)
+    {
+        _poke(baseLower, baseUpper);
+        (,,collect0, collect1) = _burnAndCollect(baseLower, baseUpper, 0);
     }
 
     /**
@@ -659,45 +685,5 @@ contract Booster is
     modifier onlyTeam {
         require(msg.sender == team, "governance");
         _;
-    }
-
-    function getTotalAmounts(uint256 amountBP)
-        external
-        returns(uint256 amount0, uint256 amount1)
-    {
-        uint256 _totalSupply = totalSupply();
-        if(_totalSupply > 0){
-            _poke(baseLower, baseUpper);
-            (amount0,  amount1) = _getPositionAmounts();
-            (amount0,  amount1) = (amount0.mul(amountBP).div(_totalSupply), amount1.mul(amountBP).div(_totalSupply));
-        } else {
-            (amount0,  amount1) = (0,0);
-        }
-
-    }
-
-    function _collect(
-        int24 tickLower,
-        int24 tickUpper
-    )
-    internal
-    returns(uint256 collect0, uint256 collect1){
-        // Collect all owed tokens including earned fees
-        (collect0, collect1) =
-            pool.collect(
-                address(this),
-                tickLower,
-                tickUpper,
-                type(uint128).max,
-                type(uint128).max
-            );
-    }   
-
-    function collect()
-        external
-        returns(uint256 collect0, uint256 collect1)
-    {
-        _poke(baseLower, baseUpper);
-        (collect0, collect1) = _collect(baseLower, baseUpper);
     }
 }
