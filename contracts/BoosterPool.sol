@@ -65,43 +65,69 @@ contract Booster is
     IERC20 public immutable token1;
     int24 public immutable tickSpacing;
 
-    uint256 public protocolFee;
-    uint256 public maxTotalSupply;
     address public governance;
     address public pendingGovernance;
     address public strategy;
-    address public team;
+    
     int24 public baseLower;
     int24 public baseUpper;
 
-    uint256 public accruedOwnerFees0;
-    uint256 public accruedOwnerFees1;
+    address public addressA;
+    address public addressB;
+    uint256 public protocolFeeA;
+    uint256 public protocolFeeB;
 
-    uint256 public accruedTeamFees0;
-    uint256 public accruedTeamFees1;
+    uint256 public treasuryA0;
+    uint256 public treasuryA1;
+
+    uint256 public treasuryB0;
+    uint256 public treasuryB1;
+
+    bool public isDeactivated;
 
     /**
      * @param _pool Underlying Uniswap V3 pool
-     * @param _protocolFee Protocol fee expressed as multiple of 1e-6
-     * @param _maxTotalSupply Cap on total supply
+     * @param _addressB Address with access to Treasury A
+     * @param _addressB Address with access to Treasury B
+     * @param _protocolFeeA Protocol fee expressed as multiple of 1e-6, accumulates in the treasuryA
+     * @param _protocolFeeB Protocol fee expressed as multiple of 1e-6, accumulates in the treasuryB
+     * _protocolFeeA and _protocolFeeB in total must not exceed 1e-6
+     * @param _name Token name
+     * @param _symbol Token symbol
+     * @param _strategy Address that can rebalance 
+     * @param _tickLower Position tick lower
+     * @param _tickUpper Position tick upper
      */
     constructor(
         address _pool,
-        uint256 _protocolFee,
-        uint256 _maxTotalSupply,
-        address _team
-    ) ERC20("Booster pool", "BP") {
+        address _addressA,
+        address _addressB,
+        uint256 _protocolFeeA,
+        uint256 _protocolFeeB,
+        string memory _name,
+        string memory _symbol,
+        address _strategy,
+        int24 _tickLower,
+        int24 _tickUpper
+    ) ERC20(_name, _symbol) {
         pool = IUniswapV3Pool(_pool);
         token0 = IERC20(IUniswapV3Pool(_pool).token0());
         token1 = IERC20(IUniswapV3Pool(_pool).token1());
-        tickSpacing = IUniswapV3Pool(_pool).tickSpacing();
+        int24 _tickSpacing = IUniswapV3Pool(_pool).tickSpacing();
+        tickSpacing = _tickSpacing;
 
-        protocolFee = _protocolFee;
-        maxTotalSupply = _maxTotalSupply;
         governance = msg.sender;
-        team = _team;
+        strategy = _strategy;
+        isDeactivated = false;
+        addressA = _addressA;
+        addressB = _addressB;
+        protocolFeeA = _protocolFeeA;
+        protocolFeeB = _protocolFeeB; 
+        require(_protocolFeeA.add(_protocolFeeB) < 1e6, "protocolFee");
 
-        require(_protocolFee < 1e6, "protocolFee");
+         _checkRange(_tickLower, _tickUpper, _tickSpacing);
+        baseLower = _tickLower;
+        baseUpper = _tickUpper; 
     }
 
     /**
@@ -134,6 +160,7 @@ contract Booster is
             uint256 amount1
         )
     {
+        require(!isDeactivated, "deactivated"); 
         require(amount0Desired > 0 || amount1Desired > 0, "amount0Desired or amount1Desired");
         require(to != address(0) && to != address(this), "to");
 
@@ -153,7 +180,6 @@ contract Booster is
         // Mint shares to recipient
         _mint(to, shares);
         emit Deposit(msg.sender, to, shares, amount0, amount1);
-        require(totalSupply() <= maxTotalSupply, "maxTotalSupply");
         _reinvest(0, 0);
     }
 
@@ -181,7 +207,7 @@ contract Booster is
         uint128 liquidityDesired = _liquidityForAmounts(baseLower, baseUpper, amount0Desired, amount1Desired);
         uint256 totalSupply = totalSupply();
 
-        uint128 liquidityTotal = getTotalLiquidity();
+        uint128 liquidityTotal = _getTotalLiquidity();
         //uint128 liquidityTotal = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
 
         emit Total(liquidityTotal, liquidityDesired);
@@ -234,17 +260,15 @@ contract Booster is
         // Burn shares
         _burn(msg.sender, shares);
 
-        // Calculate token amounts proportional to unused balances
-        //uint256 unusedAmount0 = getBalance0().mul(shares).div(totalSupply);
-        //uint256 unusedAmount1 = getBalance1().mul(shares).div(totalSupply);
-
-        // Withdraw proportion of liquidity from Uniswap pool
-        //(uint256 baseAmount0, uint256 baseAmount1) =  
-        (amount0, amount1) = _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
-
-        // Sum up total amounts owed to recipient
-        //amount0 = unusedAmount0.add(baseAmount0);
-        //amount1 = unusedAmount1.add(baseAmount1);
+        //if the pool is deactivated, then the assets are taken from the contract storage, in proportion to the boosterPool tokens
+        if(isDeactivated){
+            // Calculate token amounts proportional to unused balances
+            amount0 = getBalance0().mul(shares).div(totalSupply);
+            amount1 = getBalance1().mul(shares).div(totalSupply);
+        } else {
+            // Withdraw proportion of liquidity from Uniswap pool
+            (amount0, amount1) = _burnLiquidityShare(baseLower, baseUpper, shares, totalSupply);
+        }
 
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
@@ -276,10 +300,19 @@ contract Booster is
         }
     }
 
+    /**
+     * @notice The fees earned are withdrawn from Uniswap V3 
+     * and the maximum possible liquidity is deposited into the position.
+     * @param swapAmount the number of tokens to be exchanged. 
+     * A positive or negative value indicates the direction of the swap 
+     * (zeroForOne - The direction of the swap, true for token0 to token1, false for token1 to token0)
+     * @param sqrtPriceLimitX96 - The Q64.96 sqrt price limit. If zero for one, the price cannot be less than this value after the swap. If one for zero, the price cannot be greater than this value after the swap
+     */
     function reinvest(
         int256 swapAmount,
         uint160 sqrtPriceLimitX96
     ) external nonReentrant {
+        require(!isDeactivated, "deactivated"); 
         require(msg.sender == strategy, "strategy");
         _poke(baseLower, baseUpper);
         _reinvest(swapAmount, sqrtPriceLimitX96);
@@ -295,11 +328,13 @@ contract Booster is
     }
 
     /**
-     * @notice Updates vault's positions. Can only be called by the strategy.
-     * @dev Two orders are placed - a base order and a limit order. The base
-     * order is placed first with as much liquidity as possible. This order
-     * should use up all of one token, leaving only the other one. This excess
-     * amount is then placed as a single-sided bid or ask order.
+     * @notice Updates positions. Can only be called by the strategy.
+     * @param swapAmount the number of tokens to be exchanged. 
+     * A positive or negative value indicates the direction of the swap 
+     * (zeroForOne - The direction of the swap, true for token0 to token1, false for token1 to token0)
+     * @param sqrtPriceLimitX96 - The Q64.96 sqrt price limit. If zero for one, the price cannot be less than this value after the swap. If one for zero, the price cannot be greater than this value after the swap
+     * @param _baseLower new tick lower
+     * @param _baseUpper new tick upper
      */
     function rebalance(
         int256 swapAmount,
@@ -307,8 +342,9 @@ contract Booster is
         int24 _baseLower,
         int24 _baseUpper
     ) external nonReentrant {
+        require(!isDeactivated, "deactivated"); 
         require(msg.sender == strategy, "strategy");   
-        _checkRange(_baseLower, _baseUpper);
+        _checkRange(_baseLower, _baseUpper, tickSpacing);
 
         // Withdraw all current liquidity from Uniswap pool
         (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
@@ -345,12 +381,11 @@ contract Booster is
 
         // Place base order on Uniswap
         uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, balance0, balance1);
-        if(liquidity > 0)
-            _mintLiquidity(_baseLower, _baseUpper, liquidity);
+        if (liquidity > 0) {
+            pool.mint(address(this), _baseLower, _baseUpper, liquidity, "");
     }
 
-    function _checkRange(int24 tickLower, int24 tickUpper) internal view {
-        int24 _tickSpacing = tickSpacing;
+    function _checkRange(int24 tickLower, int24 tickUpper,  int24 _tickSpacing) internal pure {
         require(tickLower < tickUpper, "tickLower < tickUpper");
         require(tickLower >= TickMath.MIN_TICK, "tickLower too low");
         require(tickUpper <= TickMath.MAX_TICK, "tickUpper too high");
@@ -393,42 +428,32 @@ contract Booster is
         uint256 feesToProtocol1;
 
         // Update accrued protocol fees
-        uint256 _protocolFee = protocolFee;
+        uint256 _protocolFee = protocolFeeA.add(protocolFeeB);
         if (_protocolFee > 0) {
             feesToProtocol0 = feesToPool0.mul(_protocolFee).div(1e6);
             feesToProtocol1 = feesToPool1.mul(_protocolFee).div(1e6);
             feesToPool0 = feesToPool0.sub(feesToProtocol0);
             feesToPool1 = feesToPool1.sub(feesToProtocol1);
 
-            accruedOwnerFees0 = accruedOwnerFees0.add(feesToProtocol0.div(2));
-            accruedOwnerFees1 = accruedOwnerFees1.add(feesToProtocol1.div(2));
-            accruedTeamFees0 = accruedTeamFees0.add(feesToProtocol0 - feesToProtocol0.div(2));
-            accruedTeamFees1 = accruedTeamFees1.add(feesToProtocol1 - feesToProtocol1.div(2));
+            treasuryA0 = treasuryA0.add(feesToProtocol0.mul(protocolFeeA).div(1e6));
+            treasuryA1 = treasuryA1.add(feesToProtocol1.mul(protocolFeeA).div(1e6));
+            treasuryB0 = treasuryB0.add(feesToProtocol0 - feesToProtocol0.mul(protocolFeeA).div(1e6));
+            treasuryB1 = treasuryB1.add(feesToProtocol1 - feesToProtocol1.mul(protocolFeeA).div(1e6));
         }
         emit CollectFees(feesToPool0, feesToPool1, feesToProtocol0, feesToProtocol1);
     }
 
-    /// @dev Deposits liquidity in a range on the Uniswap pool.
-    function _mintLiquidity(
-        int24 tickLower,
-        int24 tickUpper,
-        uint128 liquidity
-    ) internal {
-        if (liquidity > 0) {
-            pool.mint(address(this), tickLower, tickUpper, liquidity, "");
-        }
-    }
 
     /**
     * @notice calculates the liquidity value in the Uniswap V3 pool, taking into account the accrued fee minus the protocol commission
     * @return liquidity Total liquidity in pool and contract
     */
-    function getTotalLiquidity() internal view returns (uint128 liquidity) {
+    function _getTotalLiquidity() internal view returns (uint128 liquidity) {
 
         (uint128 liquidityInPosition, , , uint128 tokensOwed0, uint128 tokensOwed1) =
             _position(baseLower, baseUpper);
 
-        uint256 oneMinusFee = uint256(1e6).sub(protocolFee);
+        uint256 oneMinusFee = uint256(1e6).sub(protocolFeeA.add(protocolFeeB));
         uint256 amount0 = getBalance0().add(uint256(tokensOwed0).mul(oneMinusFee).div(1e6));
         uint256 amount1 = getBalance1().add(uint256(tokensOwed1).mul(oneMinusFee).div(1e6));
 
@@ -451,7 +476,7 @@ contract Booster is
         (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
 
         // Subtract protocol fees
-        uint256 oneMinusFee = uint256(1e6).sub(protocolFee);
+        uint256 oneMinusFee = uint256(1e6).sub(protocolFeeA.add(protocolFeeB));
         amount0 = amount0.add(uint256(tokensOwed0).mul(oneMinusFee).div(1e6));
         amount1 = amount1.add(uint256(tokensOwed1).mul(oneMinusFee).div(1e6));
     }
@@ -481,7 +506,7 @@ contract Booster is
     * @return collect0 amount of accrued fees in token0
     * @return collect1 amount of accrued fees in token1
     */
-    function collect()
+    function collectPositionFees()
         external
         returns(uint256 collect0, uint256 collect1)
     {
@@ -493,7 +518,7 @@ contract Booster is
      * @notice Balance of token0 in vault not used in any position.
      */
     function getBalance0() public view returns (uint256) {
-        return token0.balanceOf(address(this)).sub(accruedOwnerFees0).sub(accruedTeamFees0);
+        return token0.balanceOf(address(this)).sub(treasuryA0).sub(treasuryB0);
 
     }
 
@@ -501,7 +526,7 @@ contract Booster is
      * @notice Balance of token1 in vault not used in any position.
      */
     function getBalance1() public view returns (uint256) {
-        return token1.balanceOf(address(this)).sub(accruedOwnerFees1).sub(accruedTeamFees1);
+        return token1.balanceOf(address(this)).sub(treasuryA1).sub(treasuryB1);
     }
 
     /// @dev Wrapper around `IUniswapV3Pool.positions()`.
@@ -554,7 +579,6 @@ contract Booster is
             );
     }
 
-
     /// @dev Casts uint256 to uint128 with overflow check.
     function _toUint128(uint256 x) internal pure returns (uint128) {
         assert(x <= type(uint128).max);
@@ -584,26 +608,29 @@ contract Booster is
     }
 
     /**
-     * @notice Used to collect accumulated protocol fees.
+     * @notice Used to collect accumulated protocol fees from the treasury A.
      */
-    function collectOwnerProtocol(
+    function collectTreasuryA(
         uint256 amount0,
         uint256 amount1,
         address to
-    ) external onlyGovernance {
-        accruedOwnerFees0 = accruedOwnerFees0.sub(amount0);
-        accruedOwnerFees1 = accruedOwnerFees1.sub(amount1);
+    ) external onlyAddressA {
+        treasuryA0 = treasuryA0.sub(amount0);
+        treasuryA1 = treasuryA1.sub(amount1);
         if (amount0 > 0) token0.safeTransfer(to, amount0);
         if (amount1 > 0) token1.safeTransfer(to, amount1);
     }
 
-    function collectTeamProtocol(
+    /**
+     * @notice Used to collect accumulated protocol fees from the treasury B.
+     */
+    function collectTreasuryB(
         uint256 amount0,
         uint256 amount1,
         address to
-    ) external onlyTeam {
-        accruedTeamFees0 = accruedTeamFees0.sub(amount0);
-        accruedTeamFees1 = accruedTeamFees1.sub(amount1);
+    ) external onlyAddressB {
+        treasuryB0 = treasuryB0.sub(amount0);
+        treasuryB1 = treasuryB1.sub(amount1);
         if (amount0 > 0) token0.safeTransfer(to, amount0);
         if (amount1 > 0) token1.safeTransfer(to, amount1);
     }
@@ -633,19 +660,21 @@ contract Booster is
      * @notice Used to change the protocol fee charged on pool fees earned from
      * Uniswap, expressed as multiple of 1e-6.
      */
-    function setProtocolFee(uint256 _protocolFee) external onlyGovernance {
-        require(_protocolFee < 1e6, "protocolFee");
-        protocolFee = _protocolFee;
+    function setProtocolFeeA(uint256 _protocolFeeA) external onlyGovernance {
+        require(_protocolFeeA.add(protocolFeeB) < 1e6, "protocolFee");
+        protocolFeeA = _protocolFeeA;
     }
 
-    /**
-     * @notice Used to change deposit cap for a guarded launch or to ensure
-     * vault doesn't grow too large relative to the pool. Cap is on total
-     * supply rather than amounts of token0 and token1 as those amounts
-     * fluctuate naturally over time.
-     */
-    function setMaxTotalSupply(uint256 _maxTotalSupply) external onlyGovernance {
-        maxTotalSupply = _maxTotalSupply;
+    function setProtocolFeeB(uint256 _protocolFeeB) external onlyGovernance {
+        require(_protocolFeeB.add(protocolFeeA) < 1e6, "protocolFee");
+        protocolFeeB = _protocolFeeB;
+    }
+
+    function deactivateMode() external onlyGovernance {
+        require(!isDeactivated, "deactivated"); 
+        isDeactivated = true;
+        (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
+        _burnAndCollect(baseLower, baseUpper, baseLiquidity);
     }
 
     /**
@@ -682,8 +711,13 @@ contract Booster is
         _;
     }
 
-    modifier onlyTeam {
-        require(msg.sender == team, "governance");
+    modifier onlyAddressA {
+        require(msg.sender == addressA, "addressA");
+        _;
+    }
+
+    modifier onlyAddressB {
+        require(msg.sender == addressB, "addressB");
         _;
     }
 }
