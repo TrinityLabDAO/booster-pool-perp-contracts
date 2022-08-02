@@ -49,8 +49,10 @@ contract Booster is
     event CollectFees(
         uint256 feesToPool0,
         uint256 feesToPool1,
-        uint256 feesToProtocol0,
-        uint256 feesToProtocol1
+        uint256 feesToTreasuryA0,
+        uint256 feesToTreasuryA1,
+        uint256 feesToTreasuryB0,
+        uint256 feesToTreasuryB1
     );
 
     event Total(
@@ -428,25 +430,28 @@ contract Booster is
 
         feesToPool0 = collect0.sub(burned0);
         feesToPool1 = collect1.sub(burned1);
-        uint256 feesToProtocol0 = 0;
-        uint256 feesToProtocol1 = 0;
 
-        // Update accrued protocol fees
-        uint256 _protocolFee = protocolFeeA.add(protocolFeeB);
-        if (_protocolFee > 0) {
-            feesToProtocol0 = feesToPool0.mul(_protocolFee).div(1e6);
-            feesToProtocol1 = feesToPool1.mul(_protocolFee).div(1e6);
-            feesToPool0 = feesToPool0.sub(feesToProtocol0);
-            feesToPool1 = feesToPool1.sub(feesToProtocol1);
+        uint256 feesToTreasuryA0 = 0;
+        uint256 feesToTreasuryA1 = 0;
+        uint256 feesToTreasuryB0 = 0;
+        uint256 feesToTreasuryB1 = 0;
 
-            treasuryA0 = treasuryA0.add(feesToProtocol0.mul(protocolFeeA).div(1e6));
-            treasuryA1 = treasuryA1.add(feesToProtocol1.mul(protocolFeeA).div(1e6));
-            treasuryB0 = treasuryB0.add(feesToProtocol0 - feesToProtocol0.mul(protocolFeeA).div(1e6));
-            treasuryB1 = treasuryB1.add(feesToProtocol1 - feesToProtocol1.mul(protocolFeeA).div(1e6));
+        if (protocolFeeA.add(protocolFeeB) > 0) {        
+            feesToTreasuryA0 = feesToPool0.mul(protocolFeeA).div(1e6);
+            feesToTreasuryA1 = feesToPool1.mul(protocolFeeA).div(1e6);
+            feesToTreasuryB0 = feesToPool0.mul(protocolFeeB).div(1e6);
+            feesToTreasuryB1 = feesToPool1.mul(protocolFeeB).div(1e6);
+
+            treasuryA0 = treasuryA0.add(feesToTreasuryA0);
+            treasuryA1 = treasuryA1.add(feesToTreasuryA1);
+            treasuryB0 = treasuryB0.add(feesToTreasuryB0);
+            treasuryB1 = treasuryB1.add(feesToTreasuryB1);
+
+            feesToPool0 = feesToPool0.sub(feesToTreasuryA0).sub(feesToTreasuryB0);
+            feesToPool1 = feesToPool1.sub(feesToTreasuryA1).sub(feesToTreasuryB1);
         }
-        emit CollectFees(feesToPool0, feesToPool1, feesToProtocol0, feesToProtocol1);
+        emit CollectFees(feesToPool0, feesToPool1, feesToTreasuryA0, feesToTreasuryA1, feesToTreasuryB0, feesToTreasuryB1);
     }
-
 
     /**
     * @notice calculates the liquidity value in the Uniswap V3 pool, taking into account the accrued fee minus the protocol commission

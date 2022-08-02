@@ -98,13 +98,25 @@
             {
                 "indexed": false,
                 "internalType": "uint256",
-                "name": "feesToProtocol0",
+                "name": "feesToTreasuryA0",
                 "type": "uint256"
             },
             {
                 "indexed": false,
                 "internalType": "uint256",
-                "name": "feesToProtocol1",
+                "name": "feesToTreasuryA1",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "feesToTreasuryB0",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "feesToTreasuryB1",
                 "type": "uint256"
             }
         ],
