@@ -1,30 +1,5 @@
-## Alpha Vaults
+## Booster pool
 
-This repository contains the smart contracts for the [Alpha Vaults](https://alpha.charm.fi/) protocol.
+This repository contains the smart contracts for the [Booster Pool](https://boosterpool.xyz/) protocol.
 
-Feel free to [join our discord](https://discord.gg/6BY3Fq2) if you have any questions.
-
-
-### Usage
-
-Before compiling, run below. The uniswap-v3-periphery package has to be cloned
-otherwise imports don't work.
-
-`brownie pm clone Uniswap/uniswap-v3-periphery@1.0.0`
-
-Run tests
-
-`brownie test`
-
-To deploy, modify the parameters in `scripts/deploy_mainnet.py` and run:
-
-`brownie run deploy_mainnet`
-
-To trigger a rebalance, run:
-
-`brownie run rebalance`
-
-
-### Bug Bounty
-
-We have a bug bounty program hosted on Immunefi. Please visit [our bounty page](https://immunefi.com/bounty/charm/) for more details
+Booster Pool contract allows users to add liquidity for specified Uniswap v3 pair in exchange of Booster Pool ERC20 token as a proof of liquidity share. Booster Pool strategy address manages Booster Pool liquidity in exchange of protocol fees (feeA and feeB is reserved for various reasons). Booster Pool is based on [AlphaVault contract](https://github.com/charmfinance/alpha-vaults-contracts/blob/main/contracts/AlphaVault.sol), but uses different approach to the deposit/burn token proportion. Booster Pool's proportion equals to Uniswap position liquidity proportion at the time of the deposit. Funds that happen to be out of proportion are left on the contract waiting for the rebalace from strategy. In case of contract deactivation burn rule changes from Uniswap share proportion to contract balance proportion. 
