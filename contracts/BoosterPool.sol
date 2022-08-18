@@ -2,7 +2,6 @@
 pragma solidity 0.8.7;
 
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -28,7 +27,6 @@ contract Booster is
     ReentrancyGuard
 {
     using SafeERC20 for IERC20;
-    using SafeMath for uint256;
 
     event Deposit(
         address indexed sender,
@@ -61,6 +59,15 @@ contract Booster is
     );
 
     event Snapshot(int24 tick, uint256 totalAmount0, uint256 totalAmount1, uint256 totalSupply);
+
+    event AddressA(address oldAddress, address newAddress);
+    event AddressB(address oldAddress, address newAddress);
+    event ProtocolFeeA(uint256 oldProtocolFee, uint256 newProtocolFee);
+    event ProtocolFeeB(uint256 oldProtocolFee, uint256 newProtocolFee);
+    event PendingGovernance(address candidate);
+    event Governance(address oldGovernance, address newGovernance);
+    event Strategy(address oldStrategy, address newStrategy);
+    event Deactivate();
 
     IUniswapV3Pool public immutable pool;
     IERC20 public immutable token0;
@@ -128,7 +135,7 @@ contract Booster is
         addressB = _addressB;
         protocolFeeA = _protocolFeeA;
         protocolFeeB = _protocolFeeB; 
-        require(_protocolFeeA.add(_protocolFeeB) < 1e6, "protocolFee");
+        require((_protocolFeeA + _protocolFeeB) < 1e6, "protocolFee");
 
          _checkRange(_tickLower, _tickUpper, _tickSpacing);
         baseLower = _tickLower;
@@ -222,12 +229,12 @@ contract Booster is
 
         (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidityDesired);
         //adding one penny due to loss during conversion 
-        (amount0, amount1) = (amount0.add(1), amount1.add(1));
+        (amount0, amount1) = ((amount0 + 1), (amount1 + 1));
         if (BPtotalSupply == 0) {
             // For first deposit, just use the liquidity desired      
             shares = liquidityDesired;
         } else {
-            shares = uint256(liquidityDesired).mul(BPtotalSupply).div(liquidityTotal);        
+            shares = uint256(liquidityDesired) * BPtotalSupply / liquidityTotal;        
         }
     }
 
@@ -268,8 +275,8 @@ contract Booster is
         //if the pool is deactivated, then the assets are taken from the contract storage, in proportion to the boosterPool tokens
         if(isDeactivated){
             // Calculate token amounts proportional to unused balances
-            amount0 = getBalance0().mul(shares).div(BPtotalSupply);
-            amount1 = getBalance1().mul(shares).div(BPtotalSupply);
+            amount0 = getBalance0() * shares / BPtotalSupply;
+            amount1 = getBalance1() * shares / BPtotalSupply;
         } else {
             // Withdraw proportion of liquidity from Uniswap pool
             (amount0, amount1) = _burnLiquidityShare(baseLower, baseUpper, shares, BPtotalSupply);
@@ -293,15 +300,15 @@ contract Booster is
         uint256 BPtotalSupply
     ) internal returns (uint256 amount0, uint256 amount1) {
         (uint128 totalLiquidity, , , , ) = _position(tickLower, tickUpper);
-        uint256 liquidity = uint256(totalLiquidity).mul(shares).div(BPtotalSupply);
+        uint256 liquidity = uint256(totalLiquidity) * shares / BPtotalSupply;
 
         if (liquidity > 0) {
             (uint256 burned0, uint256 burned1, uint256 fees0, uint256 fees1) =
                 _burnAndCollect(tickLower, tickUpper, _toUint128(liquidity));
 
             // Add share of fees
-            amount0 = burned0.add(fees0.mul(shares).div(BPtotalSupply));
-            amount1 = burned1.add(fees1.mul(shares).div(BPtotalSupply));
+            amount0 = burned0 + (fees0 * shares / BPtotalSupply);
+            amount1 = burned1 + (fees1 * shares / BPtotalSupply);
         }
     }
 
@@ -428,27 +435,27 @@ contract Booster is
                 type(uint128).max
             );
 
-        feesToPool0 = collect0.sub(burned0);
-        feesToPool1 = collect1.sub(burned1);
+        feesToPool0 = collect0 - burned0;
+        feesToPool1 = collect1 - burned1;
 
         uint256 feesToTreasuryA0 = 0;
         uint256 feesToTreasuryA1 = 0;
         uint256 feesToTreasuryB0 = 0;
         uint256 feesToTreasuryB1 = 0;
 
-        if (protocolFeeA.add(protocolFeeB) > 0) {        
-            feesToTreasuryA0 = feesToPool0.mul(protocolFeeA).div(1e6);
-            feesToTreasuryA1 = feesToPool1.mul(protocolFeeA).div(1e6);
-            feesToTreasuryB0 = feesToPool0.mul(protocolFeeB).div(1e6);
-            feesToTreasuryB1 = feesToPool1.mul(protocolFeeB).div(1e6);
+        if ((protocolFeeA + protocolFeeB) > 0) {        
+            feesToTreasuryA0 = feesToPool0 * protocolFeeA / 1e6;
+            feesToTreasuryA1 = feesToPool1 * protocolFeeA / 1e6;
+            feesToTreasuryB0 = feesToPool0 * protocolFeeB / 1e6;
+            feesToTreasuryB1 = feesToPool1 * protocolFeeB / 1e6;
 
-            treasuryA0 = treasuryA0.add(feesToTreasuryA0);
-            treasuryA1 = treasuryA1.add(feesToTreasuryA1);
-            treasuryB0 = treasuryB0.add(feesToTreasuryB0);
-            treasuryB1 = treasuryB1.add(feesToTreasuryB1);
+            treasuryA0 = treasuryA0 + feesToTreasuryA0;
+            treasuryA1 = treasuryA1 + feesToTreasuryA1;
+            treasuryB0 = treasuryB0 + feesToTreasuryB0;
+            treasuryB1 = treasuryB1 + feesToTreasuryB1;
 
-            feesToPool0 = feesToPool0.sub(feesToTreasuryA0).sub(feesToTreasuryB0);
-            feesToPool1 = feesToPool1.sub(feesToTreasuryA1).sub(feesToTreasuryB1);
+            feesToPool0 = feesToPool0 - feesToTreasuryA0 - feesToTreasuryB0;
+            feesToPool1 = feesToPool1 - feesToTreasuryA1 - feesToTreasuryB1;
         }
         emit CollectFees(feesToPool0, feesToPool1, feesToTreasuryA0, feesToTreasuryA1, feesToTreasuryB0, feesToTreasuryB1);
     }
@@ -462,9 +469,9 @@ contract Booster is
         (uint128 liquidityInPosition, , , uint128 tokensOwed0, uint128 tokensOwed1) =
             _position(baseLower, baseUpper);
 
-        uint256 oneMinusFee = uint256(1e6).sub(protocolFeeA.add(protocolFeeB));
-        uint256 amount0 = getBalance0().add(uint256(tokensOwed0).mul(oneMinusFee).div(1e6));
-        uint256 amount1 = getBalance1().add(uint256(tokensOwed1).mul(oneMinusFee).div(1e6));
+        uint256 oneMinusFee = uint256(1e6) - (protocolFeeA + protocolFeeB);
+        uint256 amount0 = getBalance0() + (uint256(tokensOwed0) * oneMinusFee / 1e6);
+        uint256 amount1 = getBalance1() + (uint256(tokensOwed1) * oneMinusFee / 1e6);
 
         //liquidity in position add liquidity from fees and contract balance
         liquidity = liquidityInPosition + _liquidityForAmounts(baseLower, baseUpper, amount0, amount1);
@@ -485,9 +492,9 @@ contract Booster is
         (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
 
         // Subtract protocol fees
-        uint256 oneMinusFee = uint256(1e6).sub(protocolFeeA.add(protocolFeeB));
-        amount0 = amount0.add(uint256(tokensOwed0).mul(oneMinusFee).div(1e6));
-        amount1 = amount1.add(uint256(tokensOwed1).mul(oneMinusFee).div(1e6));
+        uint256 oneMinusFee = uint256(1e6) - (protocolFeeA + protocolFeeB);
+        amount0 = amount0 + (uint256(tokensOwed0) * oneMinusFee / 1e6);
+        amount1 = amount1 + (uint256(tokensOwed1) * oneMinusFee / 1e6);
     }
 
     /**
@@ -504,7 +511,7 @@ contract Booster is
         if(BPtotalSupply > 0){
             _poke(baseLower, baseUpper);
             (amount0,  amount1) = _getPositionAmounts();
-            (amount0,  amount1) = (amount0.mul(amountBP).div(BPtotalSupply), amount1.mul(amountBP).div(BPtotalSupply));
+            (amount0,  amount1) = ((amount0 * amountBP / BPtotalSupply), (amount1 * amountBP / BPtotalSupply));
         } else {
             (amount0,  amount1) = (0,0);
         }
@@ -527,7 +534,7 @@ contract Booster is
      * @notice Balance of token0 in vault not used in any position.
      */
     function getBalance0() public view returns (uint256) {
-        return token0.balanceOf(address(this)).sub(treasuryA0).sub(treasuryB0);
+        return token0.balanceOf(address(this)) - treasuryA0 - treasuryB0;
 
     }
 
@@ -535,7 +542,7 @@ contract Booster is
      * @notice Balance of token1 in vault not used in any position.
      */
     function getBalance1() public view returns (uint256) {
-        return token1.balanceOf(address(this)).sub(treasuryA1).sub(treasuryB1);
+        return token1.balanceOf(address(this)) - treasuryA1 - treasuryB1;
     }
 
     /// @dev Wrapper around `IUniswapV3Pool.positions()`.
@@ -624,8 +631,8 @@ contract Booster is
         uint256 amount1,
         address to
     ) external onlyAddressA {
-        treasuryA0 = treasuryA0.sub(amount0);
-        treasuryA1 = treasuryA1.sub(amount1);
+        treasuryA0 = treasuryA0 - amount0;
+        treasuryA1 = treasuryA1 - amount1;
         if (amount0 > 0) token0.safeTransfer(to, amount0);
         if (amount1 > 0) token1.safeTransfer(to, amount1);
     }
@@ -638,8 +645,8 @@ contract Booster is
         uint256 amount1,
         address to
     ) external onlyAddressB {
-        treasuryB0 = treasuryB0.sub(amount0);
-        treasuryB1 = treasuryB1.sub(amount1);
+        treasuryB0 = treasuryB0 - amount0;
+        treasuryB1 = treasuryB1 - amount1;
         if (amount0 > 0) token0.safeTransfer(to, amount0);
         if (amount1 > 0) token1.safeTransfer(to, amount1);
     }
@@ -663,16 +670,19 @@ contract Booster is
      */
     function setStrategy(address newStrategy) external onlyGovernance {
         require(newStrategy != address(0) && newStrategy != address(this), "strategy");
+        emit Strategy(strategy, newStrategy);
         strategy = newStrategy;
     }
 
     function setAddressA(address newAddressA) external onlyGovernance {
         require(newAddressA != address(0) && newAddressA != address(this), "addressA");
-        addressA = newAddressA;
+        emit AddressA(addressA, newAddressA);
+        addressA = newAddressA;       
     }
 
     function setAddressB(address newAddressB) external onlyGovernance {
         require(newAddressB != address(0) && newAddressB != address(this), "addressB");
+        emit AddressB(addressB, newAddressB);
         addressB = newAddressB;
     }
     /**
@@ -680,12 +690,14 @@ contract Booster is
      * Uniswap, expressed as multiple of 1e-6.
      */
     function setProtocolFeeA(uint256 newProtocolFeeA) external onlyGovernance {
-        require(newProtocolFeeA.add(protocolFeeB) < 1e6, "protocolFeeA");
+        require((newProtocolFeeA + protocolFeeB) < 1e6, "protocolFeeA");
+        emit ProtocolFeeA(protocolFeeA, newProtocolFeeA);
         protocolFeeA = newProtocolFeeA;
     }
 
     function setProtocolFeeB(uint256 newProtocolFeeB) external onlyGovernance {
-        require(newProtocolFeeB.add(protocolFeeA) < 1e6, "protocolFeeB");
+        require((newProtocolFeeB + protocolFeeA) < 1e6, "protocolFeeB");
+        emit ProtocolFeeB(protocolFeeB, newProtocolFeeB);
         protocolFeeB = newProtocolFeeB;
     }
 
@@ -694,18 +706,7 @@ contract Booster is
         isDeactivated = true;
         (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
         _burnAndCollect(baseLower, baseUpper, baseLiquidity);
-    }
-
-    /**
-     * @notice Removes liquidity in case of emergency.
-     */
-    function emergencyBurn(
-        int24 tickLower,
-        int24 tickUpper,
-        uint128 liquidity
-    ) external onlyGovernance {
-        pool.burn(tickLower, tickUpper, liquidity);
-        pool.collect(address(this), tickLower, tickUpper, type(uint128).max, type(uint128).max);
+        emit Deactivate();
     }
 
     /**
@@ -715,6 +716,7 @@ contract Booster is
     function setGovernance(address newGovernance) external onlyGovernance {
         require(newGovernance != address(0) && newGovernance != address(this), "governance");
         pendingGovernance = newGovernance;
+        emit PendingGovernance(pendingGovernance);
     }
 
     /**
@@ -723,7 +725,8 @@ contract Booster is
      */
     function acceptGovernance() external {
         require(msg.sender == pendingGovernance, "pendingGovernance");
-        governance = msg.sender;
+        emit Governance(governance, msg.sender);
+        governance = msg.sender;    
     }
 
     modifier onlyGovernance {
