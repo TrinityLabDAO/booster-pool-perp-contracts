@@ -31,7 +31,7 @@ import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.so
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "@uniswap/v3-periphery/contracts/libraries/PositionKey.sol";
 
-import "./libraries/TickMath.sol";
+import "github.com/Uniswap/v3-core/blob/0.8/contracts/libraries/TickMath.sol";
 import "./libraries/LiquidityAmounts.sol";
 
 
